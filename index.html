@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IMAGE PUZZLE CARTRIDGE – STEGANOGRAPHY VERSION</title>
+<style>
+  body{margin:0;background:#000;color:#0f0;font-family:monospace;overflow:hidden;}
+  #menu{text-align:center;padding-top:10vh;}
+  h1{font-size:40px;text-shadow:0 0 20px #0f0;margin:10px;}
+  button{padding:12px 30px;margin:10px;font-size:18px;background:#0f0;color:#000;border:none;border-radius:10px;cursor:pointer;box-shadow:0 0 20px #0f0;}
+  button:hover{background:#0f8;}
+  #game{display:none;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#000;}
+  #timer{font-size:40px;margin:15px;text-shadow:0 0 20px #0f0;}
+  #grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:600px;height:600px;background:#111;border:10px solid #0f0;box-shadow:0 0 100px #0f0;border-radius:20px;}
+  .tile{position:relative;cursor:pointer;overflow:hidden;border:6px solid #222;box-shadow:inset 0 0 40px #000;transition:all 0.2s;}
+  .tile img{width:100%;height:100%;object-fit:cover;image-rendering:pixelated;}
+  .tile span{position:absolute;bottom:8px;right:12px;font-size:50px;color:#0f0;text-shadow:3px 3px 10px #000;font-weight:bold;z-index:2;}
+  .selected{border:10px solid #ff00ff !important;box-shadow:0 0 100px #f0f !important;transform:scale(1.05);}
+  #win{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,40,0,0.98);flex-direction:column;align-items:center;justify-content:center;z-index:100;}
+  #win h1{font-size:60px;margin:10px;text-shadow:0 0 30px #0f0;}
+  #win p{font-size:24px;margin:10px;}
+  #finalImage img{width:600px;height:600px;object-fit:contain;border:10px solid #0f0;box-shadow:0 0 100px #0f0;border-radius:15px;margin:20px;cursor:pointer;}
+  canvas{position:fixed;top:0;left:0;pointer-events:none;z-index:99;}
+</style>
+</head>
+<body>
+
+<div id="menu">
+  <h1>IMAGE PUZZLE CARTRIDGE</h1>
+  <button onclick="createPuzzle()">CREATE IMAGE PUZZLE</button>
+  <button onclick="loadPuzzle()">PLAY IMAGE PUZZLE</button>
+</div>
+
+<div id="game">
+  <div id="timer">30</div>
+  <div id="grid"></div>
+  <div style="margin-top:20px;">
+    <button onclick="resetGame()">RESTART</button>
+    <button onclick="backToMenu()">BACK</button>
+  </div>
+</div>
+
+<div id="win">
+  <h1>CONGRATULATIONS!</h1>
+  <p>You restored the secret image.</p>
+  <div id="finalImage"></div>
+  <button style="margin-top:20px;font-size:20px;padding:12px 40px;" onclick="backToMenu()">MAIN MENU</button>
+</div>
+
+<canvas id="particles"></canvas>
+
+<script>
+let originalImg, pieces = [], order = [], timer, timeLeft = 30, selected = -1;
+let secretImageURL = ''; // The secret image extracted from the chunk
+const grid = document.getElementById('grid');
+const canvas = document.getElementById('particles');
+const ctx2 = canvas.getContext('2d');
+canvas.width = innerWidth; canvas.height = innerHeight;
+
+// === CREATE WITH STEGANOGRAPHY ===
+function createPuzzle() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    const img = new Image();
+    img.onload = () => generatePuzzleWithSecret(img);
+    img.src = URL.createObjectURL(file);
+  };
+  input.click();
+}
+
+async function generatePuzzleWithSecret(img) {
+  const W = img.width, H = img.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H + 3;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H+3);
+
+  // Shuffles
+  const sw = W/3, sh = H/3;
+  const perm = Array.from({length:9},(_,i)=>i);
+  for(let i=8;i>0;i--){const j=Math.floor(Math.random()*(i+1));[perm[i],perm[j]]=[perm[j],perm[i]];}
+  for(let i=0;i<9;i++){
+    const src = perm[i];
+    ctx.drawImage(img, (src%3)*sw, Math.floor(src/3)*sh, sw, sh, (i%3)*sw, Math.floor(i/3)*sh, sw, sh);
+  }
+
+  // Binary
+  const y2 = H + 1;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,y2,1,1);
+  let x = 1;
+  for(let pos=0;pos<9;pos++) for(let bit=0;bit<9;bit++){
+    ctx.fillStyle = (perm[pos]===bit) ? '#000' : '#00ff00';
+    ctx.fillRect(x++, y2, 1, 1);
+  }
+
+  // === EMBEDS THE ORIGINAL IMAGE AS A "seCr" CHUNK ===
+  const puzzleBlob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+  const puzzleArray = new Uint8Array(await puzzleBlob.arrayBuffer());
+
+  // Pure PNG of the original image
+  const origCanvas = document.createElement('canvas');
+  origCanvas.width = W; origCanvas.height = H;
+  origCanvas.getContext('2d').drawImage(img,0,0);
+  const origBlob = await new Promise(r => origCanvas.toBlob(r, 'image/png'));
+  const origArray = new Uint8Array(await origBlob.arrayBuffer());
+
+  // Private chunk "seCr"
+  const chunkType = new TextEncoder().encode('seCr');
+  const chunkData = origArray;
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, chunkData.length);
+  const crc = new Uint8Array(4);
+
+  const chunk = new Uint8Array(4 + 4 + chunkData.length + 4);
+  chunk.set(length, 0);
+  chunk.set(chunkType, 4);
+  chunk.set(chunkData, 8);
+  chunk.set(crc, 8 + chunkData.length);
+
+  // Inserts before IEND
+  const iendPos = puzzleArray.length - 12;
+  const finalPng = new Uint8Array(puzzleArray.length + chunk.length);
+  finalPng.set(puzzleArray.subarray(0, iendPos), 0);
+  finalPng.set(chunk, iendPos);
+  finalPng.set(puzzleArray.subarray(iendPos), iendPos + chunk.length);
+
+  const finalBlob = new Blob([finalPng], {type: 'image/png'});
+  const url = URL.createObjectURL(finalBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'puzzle_cartridge_secret.png';
+  a.click();
+
+  alert('Puzzle created successfully!\nThe original image is hidden inside it.');
+}
+
+// === PLAY ===
+function loadPuzzle() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    
+    // First tries to extract the secret image
+    extractSecretImage(file, (secretURL) => {
+      secretImageURL = secretURL;
+      
+      // Depois carrega o puzzle para jogar
+      const img = new Image();
+      img.onload = () => startGame(img);
+      img.src = URL.createObjectURL(file);
+    });
+  };
+  input.click();
+}
+
+  // === EXTRACTS THE SECRET IMAGE FROM THE CHUNK ===
+function extractSecretImage(file, callback) {
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const buffer = e.target.result;
+    const uint8 = new Uint8Array(buffer);
+
+    let offset = 8; // Skips PNG signature
+    while (offset < uint8.length - 12) {
+      const length = new DataView(uint8.buffer, uint8.byteOffset).getUint32(offset);
+      const type = String.fromCharCode(...uint8.slice(offset+4, offset+8));
+
+      if (type === 'seCr') {
+        const dataStart = offset + 8;
+        const imageData = uint8.slice(dataStart, dataStart + length);
+        const blob = new Blob([imageData], {type: 'image/png'});
+        const url = URL.createObjectURL(blob);
+        callback(url);
+        return;
+      }
+      offset += 12 + length;
+    }
+    callback(null); // Secret image not found
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function startGame(img) {
+  document.getElementById('menu').style.display = 'none';
+  document.getElementById('game').style.display = 'flex';
+  originalImg = img;
+
+  // Clears the particle canvas
+  ctx2.clearRect(0, 0, canvas.width, canvas.height);
+
+  const fullW = img.width;
+  const fullH = img.height;
+  const cleanH = fullH - 3;
+  const pieceW = Math.floor(fullW / 3);
+  const pieceH = Math.floor(cleanH / 3);
+
+  // === BINARY DECODING ===
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = fullW; tempCanvas.height = fullH;
+  const tctx = tempCanvas.getContext('2d');
+  tctx.drawImage(img, 0, 0);
+  const codeY = fullH - 2;
+  let startX = -1;
+  for(let x=0; x<fullW; x++){
+    const p = tctx.getImageData(x, codeY, 1,1).data;
+    if(p[0]>240 && p[1]>240 && p[2]>240){ startX = x+1; break; }
+  }
+  order = [];
+  for(let pos=0; pos<9; pos++){
+    let val = -1;
+    for(let bit=0; bit<9; bit++){
+      const p = tctx.getImageData(startX + pos*9 + bit, codeY, 1,1).data;
+      if(p[0]<50 && p[1]<50 && p[2]<50) val = bit;
+    }
+    order[pos] = val;
+  }
+
+  // === CUTS PIECES FROM THE CLEAN PART ===
+  pieces = []; grid.innerHTML = '';
+  for(let row=0; row<3; row++){
+    for(let col=0; col<3; col++){
+      const i = row*3 + col;
+
+      const c = document.createElement('canvas');
+      c.width = pieceW; c.height = pieceH;
+      const ctxp = c.getContext('2d');
+      ctxp.drawImage(img, col*pieceW, row*pieceH, pieceW, pieceH, 0, 0, pieceW, pieceH);
+
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      const imgEl = document.createElement('img');
+      imgEl.src = c.toDataURL();
+      const num = document.createElement('span');
+      num.textContent = order[i];
+
+      tile.appendChild(imgEl);
+      tile.appendChild(num);
+      tile.onclick = () => selectTile(i);
+      grid.appendChild(tile);
+      pieces.push(tile);
+    }
+  }
+
+  timeLeft = 30;
+  document.getElementById('timer').textContent = timeLeft;
+  clearInterval(timer);
+  timer = setInterval(() => {
+    if(--timeLeft <= 0){
+      clearInterval(timer);
+      if(!checkWin()){
+        if(confirm("TIME'S UP!\n\n+30 seconds?")){
+          timeLeft = 30;
+          timer = setInterval(arguments.callee, 1000);
+        } else backToMenu();
+      }
+    }
+    document.getElementById('timer').textContent = timeLeft;
+  }, 1000);
+}
+
+function selectTile(i){
+  if(selected === -1){
+    selected = i; pieces[i].classList.add('selected');
+  } else if(selected === i){
+    pieces[i].classList.remove('selected'); selected = -1;
+  } else {
+    const a = selected, b = i;
+    const dx = Math.abs(a%3 - b%3) + Math.abs(Math.floor(a/3) - Math.floor(b/3));
+    if(dx === 1){
+      const temp = pieces[a].innerHTML;
+      pieces[a].innerHTML = pieces[b].innerHTML;
+      pieces[b].innerHTML = temp;
+      [order[a], order[b]] = [order[b], order[a]];
+      pieces[a].classList.remove('selected');
+      selected = -1;
+      if(checkWin()) victory();
+    } else {
+      pieces[selected].classList.remove('selected');
+      selected = i; pieces[i].classList.add('selected');
+    }
+  }
+}
+
+function checkWin(){
+  return order.every((v,i) => v === i);
+}
+
+function victory(){
+  clearInterval(timer);
+  document.getElementById('game').style.display = 'none';
+  document.getElementById('win').style.display = 'flex';
+  
+  // If secret image found, show it. Otherwise, show the reconstructed one
+  const finalImage = secretImageURL || originalImg.src;
+  document.getElementById('finalImage').innerHTML = 
+    `<img src="${finalImage}" onclick="saveImage('${finalImage}')" title="Click to save">`;
+  particlesBurst();
+}
+
+function saveImage(src){
+  const a = document.createElement('a');
+  a.href = src;
+  a.download = 'solved_image.png';
+  a.click();
+}
+
+function particlesBurst(){
+  let particles = [];
+  for(let i=0;i<800;i++){
+    particles.push({
+      x:innerWidth/2, y:innerHeight/2,
+      vx:Math.random()*30-15, vy:Math.random()*30-15,
+      life:200,
+      color:`hsl(${i*0.45},100%,50%)`
+    });
+  }
+  (function anim(){
+    ctx2.clearRect(0,0,canvas.width,canvas.height);
+    particles.forEach(p=>{
+      p.x+=p.vx; p.y+=p.vy; p.life--;
+      ctx2.fillStyle=p.color; ctx2.shadowBlur=60; ctx2.shadowColor=p.color;
+      ctx2.fillRect(p.x-15,p.y-15,30,30);
+    });
+    particles = particles.filter(p=>p.life>0);
+    if(particles.length) requestAnimationFrame(anim);
+  })();
+}
+
+function resetGame(){ location.reload(); }
+function backToMenu(){
+  clearInterval(timer);
+  // Clears the particle canvas
+  ctx2.clearRect(0, 0, canvas.width, canvas.height);
+  document.getElementById('menu').style.display='block';
+  document.getElementById('game').style.display='none';
+  document.getElementById('win').style.display='none';
+}
+</script>
+</body>
+</html>
