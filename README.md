@@ -6,3 +6,5 @@
 
   Enjoy.
 
+[Image Puzzle](https://mrtomatosam.github.io/imagepuzzle/)
+
