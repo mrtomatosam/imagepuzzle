@@ -1,4 +1,4 @@
-#Image Puzzle Game
+## Image Puzzle Game
 
 - Upload your image
 - create a image puzzle
